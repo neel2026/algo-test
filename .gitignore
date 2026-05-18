@@ -1,0 +1,8 @@
+.venv/
+logs/
+results/
+tmp_cm.csv/
+**/__pycache__/
+*.pyc
+*.log
+nifty_backtest/data/cache/
