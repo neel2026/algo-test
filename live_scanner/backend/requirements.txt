@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+upstox-python-sdk
+python-dotenv
+pandas
+numpy
+requests
+ta

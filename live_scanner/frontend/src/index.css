@@ -1,0 +1,28 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+button,
+select,
+input {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #d1d4dc;
+  border-radius: 10px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:focus,
+select:focus,
+input:focus {
+  outline: 1px solid rgba(38, 166, 154, 0.65);
+}
