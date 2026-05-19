@@ -16,10 +16,21 @@ ENTRY_START = time(9, 20)
 ENTRY_CUTOFF = time(13, 0)
 VIX_LOW_THRESHOLD = 13.0
 VIX_HIGH_THRESHOLD = 15.0
+SIGNAL_COOLDOWN_CANDLES = 4
+PRICE_ZONE_COOLDOWN_CANDLES = 8
+PRICE_ZONE_TOLERANCE = 100.0
 
 
 class SignalChecker:
     """Evaluate the live scanner's signal rules."""
+
+    def __init__(self) -> None:
+        """Initialize runtime signal state."""
+
+        self.current_vix: float | None = None
+        self.candle_counter: dict[str, int] = {}
+        self.last_signal_candle_index: dict[str, int] = {}
+        self.last_signal_price: dict[str, float] = {}
 
     def _qty_multiplier(self, vix: float | None) -> float:
         """Map the current VIX regime to a quantity multiplier."""
@@ -54,6 +65,20 @@ class SignalChecker:
                 support_levels.append(level)
         return resistance_levels, support_levels
 
+    def _in_cooldown(self, instrument_key: str, close: float, candle_index: int) -> bool:
+        """Return whether the instrument is blocked by candle or price-zone cooldown."""
+
+        last_index = self.last_signal_candle_index.get(instrument_key)
+        if last_index is not None and (candle_index - last_index) < SIGNAL_COOLDOWN_CANDLES:
+            return True
+
+        last_price = self.last_signal_price.get(instrument_key)
+        if last_index is not None and last_price is not None:
+            if (candle_index - last_index) < PRICE_ZONE_COOLDOWN_CANDLES and abs(close - last_price) < PRICE_ZONE_TOLERANCE:
+                return True
+
+        return False
+
     def check(self, instrument_key: str, candle: dict, indicators: dict, levels: dict) -> dict | None:
         """Return a signal payload when the live ATM conditions are satisfied."""
 
@@ -65,6 +90,11 @@ class SignalChecker:
         if isinstance(candle_dt, pd.Timestamp):
             candle_dt = candle_dt.to_pydatetime()
         if not isinstance(candle_dt, datetime):
+            return None
+        candle_index = self.candle_counter.get(instrument_key, 0)
+        self.candle_counter[instrument_key] = candle_index + 1
+
+        if self._in_cooldown(instrument_key, close, candle_index):
             return None
 
         sr_levels = indicators.get("support_levels") or indicators.get("resistance_levels") or []
@@ -104,8 +134,8 @@ class SignalChecker:
         ce_cond3 = bool(rsi_cross_above_ma3 or rsi_cross_above_ma21)
         ce_confluence = ce_cond1a and ce_cond1b
 
-        pe_trade = pe_cond1 and (pe_cond2 or pe_cond3)
-        ce_trade = ce_cond1 and (ce_cond2 or ce_cond3)
+        pe_trade = pe_cond1
+        ce_trade = ce_cond1
 
         if not pe_trade and not ce_trade:
             return None
@@ -117,27 +147,38 @@ class SignalChecker:
         strength = "single"
         if pe_trade and not ce_trade:
             action = "BUY_PE"
-            strength = "full" if (pe_cond2 and pe_cond3) else "confluence"
         elif ce_trade and not pe_trade:
             action = "BUY_CE"
-            strength = "full" if (ce_cond2 and ce_cond3) else "confluence"
         elif pe_trade and ce_trade:
             if pe_score > ce_score:
                 action = "BUY_PE"
-                strength = "full" if (pe_cond2 and pe_cond3) else "confluence"
             elif ce_score > pe_score:
                 action = "BUY_CE"
-                strength = "full" if (ce_cond2 and ce_cond3) else "confluence"
 
         if action == "HOLD":
             return None
+
+        if action == "BUY_PE":
+            if pe_cond2 and pe_cond3:
+                strength = "full"
+            elif pe_cond2 or pe_cond3:
+                strength = "confluence"
+            else:
+                strength = "single"
+        elif action == "BUY_CE":
+            if ce_cond2 and ce_cond3:
+                strength = "full"
+            elif ce_cond2 or ce_cond3:
+                strength = "confluence"
+            else:
+                strength = "single"
 
         atm_strike = int(round(close / ATM_ROUNDING) * ATM_ROUNDING)
         direction = "CE" if action == "BUY_CE" else "PE"
         target1 = close + TARGET1_SPOT_MOVE if direction == "CE" else close - TARGET1_SPOT_MOVE
         target2 = close + TARGET2_SPOT_MOVE if direction == "CE" else close - TARGET2_SPOT_MOVE
         stoploss = close - STOPLOSS_SPOT_MOVE if direction == "CE" else close + STOPLOSS_SPOT_MOVE
-        vix = levels.get("vix") or indicators.get("vix")
+        vix = levels.get("vix") or indicators.get("vix") or self.current_vix
         qty_multiplier = self._qty_multiplier(float(vix) if vix is not None and pd.notna(vix) else None)
         entry_window_open = self._entry_window_open(candle_dt)
         signal_id = f"{instrument_key}:{int(candle_dt.timestamp())}:{action}"
@@ -165,7 +206,7 @@ class SignalChecker:
             "tradeable": bool(entry_window_open),
         }
 
-        return {
+        signal = {
             "signal_id": signal_id,
             "instrument": instrument_key,
             "datetime": candle_dt.isoformat(),
@@ -184,3 +225,10 @@ class SignalChecker:
             "tradeable": bool(entry_window_open),
             "signal_log": signal_log,
         }
+        rsi_value = indicators.get("rsi")
+        if rsi_value is None or pd.isna(rsi_value):
+            signal["strength"] = "single"
+            signal["action_note"] = "RSI/BB not yet computed"
+        self.last_signal_candle_index[instrument_key] = candle_index
+        self.last_signal_price[instrument_key] = close
+        return signal

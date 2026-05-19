@@ -72,6 +72,9 @@ state: dict[str, Any] = {
     "candle_history": {},
     "signal_history": [],
     "current_ltp": {},
+    "current_vix": None,
+    "latest_indicators": {},
+    "vix_task": None,
     "current_instrument": os.getenv("DEFAULT_INSTRUMENT", "NSE_INDEX|Nifty 50"),
     "interval": int(os.getenv("DEFAULT_INTERVAL", 5)),
 }
@@ -124,11 +127,57 @@ def _start_feed() -> None:
         state["feed"].change_instruments([current_instrument])
 
 
+async def poll_vix(token: str) -> None:
+    """Poll India VIX periodically and cache the latest value."""
+
+    while True:
+        try:
+            response = await asyncio.to_thread(
+                requests.get,
+                "https://api.upstox.com/v2/market-quote/quotes",
+                params={"instrument_key": "NSE_INDEX|India VIX"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json().get("data", {})
+            vix_data = (
+                payload.get("NSE_INDEX:India VIX")
+                or payload.get("NSE_INDEX|India VIX")
+                or next(iter(payload.values()), {})
+            )
+            vix_val = vix_data.get("last_price")
+            if vix_val is not None:
+                state["current_vix"] = float(vix_val)
+                state["signal_checker"].current_vix = float(vix_val)
+                logger.info("VIX updated: %s", vix_val)
+        except Exception as exc:
+            logger.warning("VIX poll failed: %s", exc)
+        await asyncio.sleep(60)
+
+
+def _ensure_vix_poller() -> None:
+    """Start the VIX polling task once per process."""
+
+    loop = state.get("loop")
+    token = state.get("access_token")
+    task = state.get("vix_task")
+    if loop is None or not token:
+        return
+    if task and not task.done():
+        return
+    state["vix_task"] = loop.create_task(poll_vix(token))
+
+
 def _on_token(token: str) -> None:
     """Handle a fresh token from the OAuth flow."""
 
     state["access_token"] = token
     _start_feed()
+    _ensure_vix_poller()
 
 
 state["auth"] = UpstoxAuth(on_token=_on_token)
@@ -328,6 +377,7 @@ def _build_history_payload(instrument_key: str, interval_minutes: int, days: int
         return {
             "candles": [],
             "signals": [],
+            "indicators": {"vix": state.get("current_vix")},
             "meta": {
                 "instrument": instrument_key,
                 "interval": interval_minutes,
@@ -352,6 +402,7 @@ def _build_history_payload(instrument_key: str, interval_minutes: int, days: int
         }
 
     signals: list[dict] = []
+    latest_indicators: dict[str, Any] = {"vix": state.get("current_vix")}
     for idx in range(len(working)):
         candle = working.iloc[idx]
         candle_date = candle["date"]
@@ -361,12 +412,18 @@ def _build_history_payload(instrument_key: str, interval_minutes: int, days: int
             if prev_index >= 0:
                 prev_day = day_ohlc.get(unique_dates[prev_index], {})
         try:
-            indicators = state["indicator_engine"].compute(working.iloc[: idx + 1].drop(columns=["date"]), prev_day)
+            indicators = state["indicator_engine"].compute(
+                working.iloc[: idx + 1].drop(columns=["date"]),
+                prev_day,
+                instrument_key=instrument_key,
+            )
         except Exception as exc:
             logger.warning("Indicator compute failed for %s on %s: %s", instrument_key, candle_date, exc)
             continue
         if not indicators:
             continue
+        indicators["vix"] = state.get("current_vix")
+        latest_indicators = indicators
         try:
             signal = state["signal_checker"].check(
                 instrument_key,
@@ -396,6 +453,7 @@ def _build_history_payload(instrument_key: str, interval_minutes: int, days: int
     return {
         "candles": candles,
         "signals": signals,
+        "indicators": latest_indicators,
         "meta": {
             "instrument": instrument_key,
             "interval": interval_minutes,
@@ -448,8 +506,10 @@ def on_candle_close(instrument_key: str, candle: dict) -> None:
         except Exception as exc:
             logger.warning("Previous day fetch failed for %s: %s", instrument_key, exc)
 
-    indicators = state["indicator_engine"].compute(df, prev_day)
+    indicators = state["indicator_engine"].compute(df, prev_day, instrument_key=instrument_key)
     if indicators:
+        indicators["vix"] = state.get("current_vix")
+        state["latest_indicators"] = indicators
         signal = state["signal_checker"].check(instrument_key, candle, indicators, indicators)
         if signal:
             state["signal_history"].append(signal)
@@ -492,6 +552,8 @@ def get_state():
         "authenticated": bool(state.get("access_token")),
         "signal_count": len(state["signal_history"]),
         "latest_signal": state["signal_history"][-1] if state["signal_history"] else None,
+        "current_vix": state.get("current_vix"),
+        "latest_indicators": state.get("latest_indicators", {}),
     }
 
 
@@ -602,3 +664,4 @@ async def startup() -> None:
     token = _load_access_token()
     if token:
         _start_feed()
+        _ensure_vix_poller()

@@ -89,7 +89,7 @@ class IndicatorEngine:
         s2 = pivot - (high - low)
         return {"pivot": pivot, "r1": r1, "r2": r2, "s1": s1, "s2": s2}
 
-    def compute(self, candles_df: pd.DataFrame, prev_day: dict | None) -> dict | None:
+    def compute(self, candles_df: pd.DataFrame, prev_day: dict | None, instrument_key: str | None = None) -> dict | None:
         """Compute the latest indicator snapshot for the current candle set."""
 
         if candles_df is None or len(candles_df) < self.MIN_CANDLES:
@@ -126,7 +126,7 @@ class IndicatorEngine:
         )
         support_levels, resistance_levels = self._extract_sr_levels(last)
 
-        return {
+        result = {
             "bb_upper": float(last.get("upper_band")) if pd.notna(last.get("upper_band")) else None,
             "bb_lower": float(last.get("lower_band")) if pd.notna(last.get("lower_band")) else None,
             "bb_middle": float(last.get("middle_band")) if pd.notna(last.get("middle_band")) else None,
@@ -147,6 +147,12 @@ class IndicatorEngine:
             "resistance_levels": resistance_levels,
             "current_close": float(last.get("close")) if pd.notna(last.get("close")) else None,
         }
+        print(f"[INDICATORS] {instrument_key or 'unknown'}")
+        print(f"  RSI: {result['rsi']:.2f}" if result["rsi"] is not None else "  RSI: N/A")
+        print(f"  BB Upper: {result['bb_upper']:.2f}" if result["bb_upper"] is not None else "  BB Upper: N/A")
+        print(f"  BB Lower: {result['bb_lower']:.2f}" if result["bb_lower"] is not None else "  BB Lower: N/A")
+        print(f"  Candles used: {len(candles_df)}")
+        return result
 
     def fetch_prev_day(self, instrument_key: str, access_token: str, reference_date: date | None = None) -> dict:
         """Fetch the previous daily OHLC candle for the selected instrument."""

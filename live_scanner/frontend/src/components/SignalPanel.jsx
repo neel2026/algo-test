@@ -7,6 +7,16 @@ export default function SignalPanel({ signals, indicators }) {
     close != null && upper != null && lower != null && upper !== lower
       ? Math.max(0, Math.min(100, ((close - lower) / (upper - lower)) * 100))
       : null
+  let bbPositionLabel = "N/A"
+  if (close != null && upper != null && lower != null) {
+    if (close > upper) {
+      bbPositionLabel = "UPPER BAND"
+    } else if (close < lower) {
+      bbPositionLabel = "LOWER BAND"
+    } else if (bbPosition != null) {
+      bbPositionLabel = `${bbPosition.toFixed(1)}%`
+    }
+  }
   const rsi = indicators.rsi
   const rsiClass = rsi == null ? "neutral" : rsi >= 50 ? "positive" : "negative"
 
@@ -25,7 +35,7 @@ export default function SignalPanel({ signals, indicators }) {
           </div>
           <div className="indicator-pill">
             <div className="label">BB Position</div>
-            <div className="value">{bbPosition != null ? `${bbPosition.toFixed(1)}%` : "N/A"}</div>
+            <div className="value">{bbPositionLabel}</div>
           </div>
         </div>
         <div className="bb-bar" title="Position between Bollinger Bands">

@@ -16,6 +16,7 @@ export default function App() {
   const [latestState, setLatestState] = useState({})
   const [historyCandles, setHistoryCandles] = useState([])
   const [historySignals, setHistorySignals] = useState([])
+  const [historyIndicators, setHistoryIndicators] = useState({})
   const [historyMeta, setHistoryMeta] = useState({})
   const [historyLoading, setHistoryLoading] = useState(false)
   const { candles, ticks, signals, indicators, connected } = useSSE()
@@ -46,6 +47,21 @@ export default function App() {
   useEffect(() => {
     if (!authenticated) return
 
+    const syncState = () => {
+      fetch(`${API_BASE}/state`)
+        .then((response) => response.json())
+        .then((scannerState) => setLatestState(scannerState))
+        .catch(() => {})
+    }
+
+    syncState()
+    const timer = window.setInterval(syncState, 5000)
+    return () => window.clearInterval(timer)
+  }, [authenticated])
+
+  useEffect(() => {
+    if (!authenticated) return
+
     const controller = new AbortController()
     setHistoryLoading(true)
     setHistoryMeta((previous) => ({
@@ -61,6 +77,7 @@ export default function App() {
       .then((payload) => {
         setHistoryCandles(payload.candles ?? [])
         setHistorySignals(payload.signals ?? [])
+        setHistoryIndicators(payload.indicators ?? {})
         setHistoryMeta(payload.meta ?? {})
         setHistoryLoading(false)
       })
@@ -68,6 +85,7 @@ export default function App() {
         if (error?.name === "AbortError") return
         setHistoryCandles([])
         setHistorySignals([])
+        setHistoryIndicators({})
         setHistoryMeta({
           status: "error",
           source: "frontend_fetch",
@@ -83,6 +101,18 @@ export default function App() {
       controller.abort()
     }
   }, [authenticated, instrument, interval, historyDays])
+
+  const displayIndicators = useMemo(() => {
+    const merged = {
+      ...historyIndicators,
+      ...latestState.latest_indicators,
+      ...indicators,
+    }
+    if (merged.vix == null && latestState.current_vix != null) {
+      merged.vix = latestState.current_vix
+    }
+    return merged
+  }, [historyIndicators, latestState, indicators])
 
   const selectedSignals = useMemo(() => {
     const merged = [...historySignals, ...signals]
@@ -120,7 +150,7 @@ export default function App() {
         <IntervalSelector value={interval} onChange={handleIntervalChange} />
         <StatusBar
           connected={connected}
-          indicators={indicators}
+          indicators={displayIndicators}
           instrument={instrument}
           signalCount={selectedSignals.length}
           state={latestState}
@@ -151,7 +181,7 @@ export default function App() {
           />
         </div>
         <div className="signal-panel">
-          <SignalPanel signals={selectedSignals} indicators={indicators} />
+          <SignalPanel signals={selectedSignals} indicators={displayIndicators} />
         </div>
       </main>
     </div>
